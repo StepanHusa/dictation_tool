@@ -73,9 +73,9 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 - [x] Config options: `model` size, `language` (default `en`), `vad_filter`
 
 ### Phase 6 — Text injection
-- [ ] Inject via `xdotool type --clearmodifiers --delay 0 -- "$TEXT"`
-- [ ] Clipboard fallback: `xclip -selection clipboard` + `xdotool key ctrl+v`
-- [ ] Config option `injection_method = xdotool` or `clipboard`
+- [x] Inject via `xdotool type --clearmodifiers --delay 0 -- "$TEXT"`
+- [x] Clipboard fallback: `xclip -selection clipboard` + `xdotool key ctrl+v`
+- [x] Config option `injection_method = xdotool` or `clipboard`
 
 ### Phase 7 — Notifications
 - [ ] `start`: notify-send "🎤 Dictation" "Listening…" (urgency low, timeout 3000)

@@ -365,11 +365,56 @@ def _transcribe_worker() -> None:
             f"dictate: transcription done: {len(text.split())} word(s)",
             flush=True,
         )
+        inject_text(text, _config)
     except Exception as exc:
         print(f"dictate: transcription error: {exc}", flush=True)
         _last_transcript = None
     finally:
         set_state("idle")
+
+
+# ── Text injection ───────────────────────────────────────────────────────────
+
+def inject_text(text: str, config: dict) -> None:
+    """Type *text* into the focused window using the configured injection method.
+
+    injection_method = "xdotool"  (default)
+        xdotool type --clearmodifiers --delay 0 -- TEXT
+    injection_method = "clipboard"
+        pipe TEXT to xclip, then xdotool key ctrl+v
+    """
+    if not text:
+        return
+
+    method = config.get("injection_method", "xdotool")
+
+    if method == "clipboard":
+        try:
+            subprocess.run(
+                ["xclip", "-selection", "clipboard"],
+                input=text.encode(),
+                timeout=5,
+                check=True,
+            )
+            subprocess.run(
+                ["xdotool", "key", "ctrl+v"],
+                timeout=5,
+                check=True,
+            )
+            print("dictate: text injected via clipboard", flush=True)
+        except Exception as exc:
+            print(f"dictate: clipboard injection error: {exc}", flush=True)
+    else:
+        # Default: xdotool
+        try:
+            subprocess.run(
+                ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", text],
+                timeout=30,
+                check=True,
+            )
+            print("dictate: text injected via xdotool", flush=True)
+        except Exception as exc:
+            print(f"dictate: xdotool injection error: {exc}", flush=True)
 
 
 # ── Daemon helpers ──────────────────────────────────────────────────────────
