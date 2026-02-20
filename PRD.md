@@ -97,7 +97,7 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 
 - [x] `bash install.sh` completes without errors
 - [x] `dictate toggle` starts daemon (first call), shows notification, records, transcribes, types text
-- [ ] `dictate toggle` again stops recording and types result
+- [x] `dictate toggle` again stops recording and types result
 - [ ] `dictate cancel` aborts without typing anything
 - [ ] All notify-send notifications appear at the correct stages
 - [ ] BT switching is a graceful no-op when no BT device is present
