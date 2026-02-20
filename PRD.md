@@ -78,11 +78,11 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 - [x] Config option `injection_method = xdotool` or `clipboard`
 
 ### Phase 7 — Notifications
-- [ ] `start`: notify-send "🎤 Dictation" "Listening…" (urgency low, timeout 3000)
-- [ ] `stop` (transcribing): notify-send "⏳ Dictation" "Transcribing…"
-- [ ] `stop` (done): notify-send "✅ Dictation" "Done — N words"
-- [ ] `cancel`: notify-send "❌ Dictation" "Cancelled"
-- [ ] Errors: notify-send "⚠ Dictation" "<error message>"
+- [x] `start`: notify-send "🎤 Dictation" "Listening…" (urgency low, timeout 3000)
+- [x] `stop` (transcribing): notify-send "⏳ Dictation" "Transcribing…"
+- [x] `stop` (done): notify-send "✅ Dictation" "Done — N words"
+- [x] `cancel`: notify-send "❌ Dictation" "Cancelled"
+- [x] Errors: notify-send "⚠ Dictation" "<error message>"
 
 ### Phase 8 — README
 - [ ] Install instructions (clone, run install.sh, add ~/.local/bin to PATH)

@@ -361,16 +361,35 @@ def _transcribe_worker() -> None:
     try:
         text = transcribe_audio(_last_audio)
         _last_transcript = text
+        word_count = len(text.split()) if text else 0
         print(
-            f"dictate: transcription done: {len(text.split())} word(s)",
+            f"dictate: transcription done: {word_count} word(s)",
             flush=True,
         )
+        notify("✅ Dictation", f"Done — {word_count} words")
         inject_text(text, _config)
     except Exception as exc:
         print(f"dictate: transcription error: {exc}", flush=True)
+        notify("⚠ Dictation", str(exc))
         _last_transcript = None
     finally:
         set_state("idle")
+
+
+# ── Notifications ────────────────────────────────────────────────────────────
+
+def notify(title: str, message: str, urgency: str | None = None, timeout: int | None = None) -> None:
+    """Send a desktop notification via notify-send; silently ignore errors."""
+    cmd = ["notify-send"]
+    if urgency:
+        cmd += ["-u", urgency]
+    if timeout is not None:
+        cmd += ["-t", str(timeout)]
+    cmd += [title, message]
+    try:
+        subprocess.run(cmd, timeout=5, capture_output=True)
+    except Exception:
+        pass
 
 
 # ── Text injection ───────────────────────────────────────────────────────────
@@ -486,18 +505,21 @@ def handle_command(cmd):
             set_state("recording")
             bt_switch_to_hfp()
             start_recording()
+            notify("🎤 Dictation", "Listening…", urgency="low", timeout=3000)
         return {"ok": True, "state": get_state()}
     elif action == "stop":
         if get_state() == "recording":
             set_state("transcribing")
             stop_recording()
             bt_restore_profile()
+            notify("⏳ Dictation", "Transcribing…")
             threading.Thread(target=_transcribe_worker, daemon=True).start()
         return {"ok": True, "state": get_state()}
     elif action == "cancel":
         if get_state() == "recording":
             cancel_recording()
             bt_restore_profile()
+            notify("❌ Dictation", "Cancelled")
         set_state("idle")
         return {"ok": True, "state": get_state()}
     elif action == "quit":
