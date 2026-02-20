@@ -2,3 +2,6 @@
 
 (append entries below as tasks are completed)
 
+2026-02-20: Created requirements.txt with faster-whisper, sounddevice, numpy (Python 3.13 >= 3.11 so tomli omitted).
+2026-02-20: Created install.sh (Phase 1 Task 2): creates venv at ~/.local/share/dictation_tool/venv, pip-installs requirements.txt, writes ~/.local/bin/dictate wrapper, creates ~/.config/dictation_tool/ config dir.
+
