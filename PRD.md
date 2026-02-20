@@ -102,4 +102,4 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 - [x] All notify-send notifications appear at the correct stages
 - [x] BT switching is a graceful no-op when no BT device is present
 - [x] Daemon survives terminal close; second call reuses running daemon
-- [ ] `python3 -m py_compile dictate.py` passes with no errors
+- [x] `python3 -m py_compile dictate.py` passes with no errors
