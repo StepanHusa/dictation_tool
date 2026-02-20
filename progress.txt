@@ -4,4 +4,12 @@
 
 2026-02-20: Created requirements.txt with faster-whisper, sounddevice, numpy (Python 3.13 >= 3.11 so tomli omitted).
 2026-02-20: Created install.sh (Phase 1 Task 2): creates venv at ~/.local/share/dictation_tool/venv, pip-installs requirements.txt, writes ~/.local/bin/dictate wrapper, creates ~/.config/dictation_tool/ config dir.
-
+2026-02-20: Marked install.sh task [x] in PRD.md — implementation was already complete, PRD was not yet updated.
+2026-02-20: Updated install.sh to write default ~/.config/dictation_tool/config.toml (model=base, language=en, vad_filter=true, auto_switch_bt=true, injection_method=xdotool) if it does not already exist.
+2026-02-20: Marked Phase 1 git-repo task [x] in PRD.md — repo was already initialised with initial commits from prior sessions.
+2026-02-20: Created dictate.py (Phase 2 Task 1): daemon subcommand with double-fork daemonize(), PID file, Unix socket server, JSON command dispatch (start/stop/cancel/status/quit), and stub subcommands for remaining CLI verbs.
+2026-02-20: Implemented cmd_status (Phase 2 Task 2): send_command() helper connects to Unix socket; cmd_status prints daemon state or "not-running" if socket is absent/refused.
+2026-02-20: Implemented daemon auto-start (Phase 2 Task 3): added is_daemon_running(), ensure_daemon_running() (Popen detached + 3 s socket poll), and wired cmd_start/cmd_toggle/cmd_stop/cmd_cancel.
+2026-02-20: Implemented stale PID detection (Phase 2 Task 4): added read_pid(), pid_is_alive() helpers; run_daemon() now checks for an existing PID file on startup, removes it if stale, or exits with an error if another daemon is already alive.
+2026-02-20: Implemented Phase 3 (Audio recording): load_config() via tomllib, list_bt_headset_source() via pactl, select_input_device() with BT-prefer/default fallback, sounddevice InputStream recording into numpy float32 buffer at 16 kHz in a background thread, _last_audio stored on stop; device config override supported.
+2026-02-20: Implemented Phase 4 (BT profile switching): _pactl_list_cards(), find_bt_card_info() parser, bt_switch_to_hfp() (A2DP→HFP on start), bt_restore_profile() (restore on stop/cancel), graceful no-op when no BT device, honours auto_switch_bt config option.

@@ -40,31 +40,31 @@ wherever the cursor is. Push-to-talk style, triggered by a keyboard shortcut.
 Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 
 ### Phase 1 — Project scaffold
-- [ ] `requirements.txt` with: faster-whisper, sounddevice, numpy (+ tomli if Python < 3.11)
-- [ ] `install.sh`: create venv, pip install, write `~/.local/bin/dictate` wrapper, create config dir
-- [ ] Default `~/.config/dictation_tool/config.toml` written by install.sh with:
+- [x] `requirements.txt` with: faster-whisper, sounddevice, numpy (+ tomli if Python < 3.11)
+- [x] `install.sh`: create venv, pip install, write `~/.local/bin/dictate` wrapper, create config dir
+- [x] Default `~/.config/dictation_tool/config.toml` written by install.sh with:
       model=base, language=en, vad_filter=true, auto_switch_bt=true, injection_method=xdotool
-- [ ] Git repo initialised (`git init`, initial commit with scaffold files)
+- [x] Git repo initialised (`git init`, initial commit with scaffold files)
 
 ### Phase 2 — Daemon core
-- [ ] `dictate.py daemon`: start background process, write PID to `/tmp/dictation_tool.pid`,
+- [x] `dictate.py daemon`: start background process, write PID to `/tmp/dictation_tool.pid`,
       open Unix socket at `/tmp/dictation_tool.sock`, listen for commands
-- [ ] `dictate.py status`: connect to socket, print state (idle/recording/transcribing/not-running)
-- [ ] Daemon auto-started by `start`/`toggle` if not already running (subprocess.Popen detached)
-- [ ] PID file cleanup on daemon exit; stale PID detection on startup
+- [x] `dictate.py status`: connect to socket, print state (idle/recording/transcribing/not-running)
+- [x] Daemon auto-started by `start`/`toggle` if not already running (subprocess.Popen detached)
+- [x] PID file cleanup on daemon exit; stale PID detection on startup
 
 ### Phase 3 — Audio recording
-- [ ] List available input sources via `pactl list sources short`
-- [ ] Auto-select input: prefer BT headset source when available, else fall back to default
-- [ ] Record audio with `sounddevice` into numpy float32 buffer at 16 kHz
-- [ ] Config option `device` to override source (name or index)
+- [x] List available input sources via `pactl list sources short`
+- [x] Auto-select input: prefer BT headset source when available, else fall back to default
+- [x] Record audio with `sounddevice` into numpy float32 buffer at 16 kHz
+- [x] Config option `device` to override source (name or index)
 
 ### Phase 4 — Bluetooth profile switching
-- [ ] Detect BT cards: `pactl list cards` → find cards with both A2DP and HFP/HSP profiles
-- [ ] On `start`: if BT card in A2DP profile, switch to `headset-head-unit` (HFP/HSP)
-- [ ] On `stop`/`cancel`: restore previous BT profile (A2DP)
-- [ ] Graceful no-op if no BT device; log warning, do not crash
-- [ ] Config option `auto_switch_bt = false` to disable
+- [x] Detect BT cards: `pactl list cards` → find cards with both A2DP and HFP/HSP profiles
+- [x] On `start`: if BT card in A2DP profile, switch to `headset-head-unit` (HFP/HSP)
+- [x] On `stop`/`cancel`: restore previous BT profile (A2DP)
+- [x] Graceful no-op if no BT device; log warning, do not crash
+- [x] Config option `auto_switch_bt = false` to disable
 
 ### Phase 5 — Transcription
 - [ ] Load `faster-whisper` model on daemon startup; log "Model loaded"
