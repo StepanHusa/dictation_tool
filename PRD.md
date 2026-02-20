@@ -95,7 +95,7 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 
 ## Success Criteria
 
-- [ ] `bash install.sh` completes without errors
+- [x] `bash install.sh` completes without errors
 - [ ] `dictate toggle` starts daemon (first call), shows notification, records, transcribes, types text
 - [ ] `dictate toggle` again stops recording and types result
 - [ ] `dictate cancel` aborts without typing anything
