@@ -46,6 +46,11 @@ _last_audio = None  # numpy float32 1-D array; set after a successful stop
 _bt_card_info: dict | None = None
 _bt_previous_profile: str | None = None
 
+# Transcription state (daemon-side only)
+_whisper_model = None          # faster-whisper WhisperModel; loaded on daemon startup
+_model_ready = threading.Event()  # set once model is loaded (or failed)
+_last_transcript: str | None = None  # most recent transcription result
+
 
 def get_state():
     return _state
@@ -313,6 +318,60 @@ def cancel_recording() -> None:
     _last_audio = None
 
 
+# ── Transcription ────────────────────────────────────────────────────────────
+
+def load_whisper_model_bg(config: dict) -> None:
+    """Load the faster-whisper model in a background thread; signal _model_ready when done."""
+    global _whisper_model
+    try:
+        from faster_whisper import WhisperModel  # noqa: PLC0415
+        model_size = config.get("model", "base")
+        print(f"dictate: loading Whisper model {model_size!r}…", flush=True)
+        _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        print("dictate: Model loaded", flush=True)
+    except Exception as exc:
+        print(f"dictate: failed to load Whisper model: {exc}", flush=True)
+    finally:
+        _model_ready.set()
+
+
+def transcribe_audio(audio) -> str:
+    """Transcribe a float32 numpy audio array; return stripped text.
+
+    Blocks until the model is ready (or failed to load).
+    """
+    _model_ready.wait()
+    if _whisper_model is None:
+        return ""
+    language = _config.get("language", "en")
+    vad_filter = _config.get("vad_filter", True)
+    segments, _ = _whisper_model.transcribe(
+        audio, language=language, vad_filter=vad_filter
+    )
+    text = "".join(seg.text for seg in segments).strip()
+    return text
+
+
+def _transcribe_worker() -> None:
+    """Background thread: transcribe _last_audio, store result, set state idle."""
+    global _last_transcript
+    if _last_audio is None:
+        set_state("idle")
+        return
+    try:
+        text = transcribe_audio(_last_audio)
+        _last_transcript = text
+        print(
+            f"dictate: transcription done: {len(text.split())} word(s)",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"dictate: transcription error: {exc}", flush=True)
+        _last_transcript = None
+    finally:
+        set_state("idle")
+
+
 # ── Daemon helpers ──────────────────────────────────────────────────────────
 
 def write_pid():
@@ -388,8 +447,7 @@ def handle_command(cmd):
             set_state("transcribing")
             stop_recording()
             bt_restore_profile()
-            # _last_audio is now ready for Phase 5 transcription
-            set_state("idle")
+            threading.Thread(target=_transcribe_worker, daemon=True).start()
         return {"ok": True, "state": get_state()}
     elif action == "cancel":
         if get_state() == "recording":
@@ -446,6 +504,11 @@ def run_daemon():
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(SOCK_FILE)
     srv.listen(5)
+
+    # Start loading the Whisper model in the background (socket is already up)
+    threading.Thread(
+        target=load_whisper_model_bg, args=(_config,), daemon=True
+    ).start()
 
     # Log to syslog-style: will be invisible when daemonized, visible in --no-fork mode
     print(f"dictate daemon started (pid={os.getpid()})", flush=True)

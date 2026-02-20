@@ -67,10 +67,10 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 - [x] Config option `auto_switch_bt = false` to disable
 
 ### Phase 5 — Transcription
-- [ ] Load `faster-whisper` model on daemon startup; log "Model loaded"
-- [ ] Transcribe numpy buffer on `stop` command
-- [ ] Strip leading/trailing whitespace from result
-- [ ] Config options: `model` size, `language` (default `en`), `vad_filter`
+- [x] Load `faster-whisper` model on daemon startup; log "Model loaded"
+- [x] Transcribe numpy buffer on `stop` command
+- [x] Strip leading/trailing whitespace from result
+- [x] Config options: `model` size, `language` (default `en`), `vad_filter`
 
 ### Phase 6 — Text injection
 - [ ] Inject via `xdotool type --clearmodifiers --delay 0 -- "$TEXT"`
