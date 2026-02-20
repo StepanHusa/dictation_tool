@@ -1,0 +1,4 @@
+# Progress Log — Dictation Tool
+
+(append entries below as tasks are completed)
+
