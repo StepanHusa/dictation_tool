@@ -85,11 +85,11 @@ Mark tasks `[x]` when complete. Do NOT skip tasks; work in order unless blocked.
 - [x] Errors: notify-send "⚠ Dictation" "<error message>"
 
 ### Phase 8 — README
-- [ ] Install instructions (clone, run install.sh, add ~/.local/bin to PATH)
-- [ ] XFCE keyboard shortcut setup: Settings → Keyboard → Application Shortcuts
+- [x] Install instructions (clone, run install.sh, add ~/.local/bin to PATH)
+- [x] XFCE keyboard shortcut setup: Settings → Keyboard → Application Shortcuts
       Recommend: `Super+D` → `dictate toggle`, `Super+Shift+D` → `dictate cancel`
-- [ ] Config file reference (all options documented)
-- [ ] Troubleshooting section (no mic found, BT not switching, xdotool not typing)
+- [x] Config file reference (all options documented)
+- [x] Troubleshooting section (no mic found, BT not switching, xdotool not typing)
 
 ---
 
