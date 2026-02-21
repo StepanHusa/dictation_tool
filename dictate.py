@@ -18,6 +18,7 @@ from logging.handlers import RotatingFileHandler
 PID_FILE = "/tmp/dictation_tool.pid"
 SOCK_FILE = "/tmp/dictation_tool.sock"
 CONFIG_PATH = os.path.expanduser("~/.config/dictation_tool/config.toml")
+VOCAB_FILE = os.path.expanduser("~/.config/dictation_tool/vocabulary.txt")
 LOG_FILE = os.path.expanduser("~/.local/state/dictation_tool/dictation_tool.log")
 
 SAMPLE_RATE = 16000
@@ -54,6 +55,29 @@ def load_config():
             return tomllib.load(f)
     except FileNotFoundError:
         return {}
+
+
+def load_vocabulary() -> list[str]:
+    """Return the custom vocabulary list, one entry per line."""
+    try:
+        with open(VOCAB_FILE) as f:
+            return [w.strip() for w in f if w.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def add_to_vocabulary(word: str) -> None:
+    """Append *word* to the vocabulary file (no-op if already present)."""
+    word = word.strip()
+    if not word:
+        return
+    existing = load_vocabulary()
+    if word in existing:
+        return
+    os.makedirs(os.path.dirname(VOCAB_FILE), exist_ok=True)
+    with open(VOCAB_FILE, "a") as f:
+        f.write(word + "\n")
+    log.info("vocabulary: added %r", word)
 
 
 # ── State (daemon-side only) ────────────────────────────────────────────────
@@ -378,8 +402,10 @@ def transcribe_audio(audio) -> str:
         return ""
     language = _config.get("language", "en")
     vad_filter = _config.get("vad_filter", True)
+    vocab = load_vocabulary()
+    initial_prompt = ", ".join(vocab) if vocab else None
     segments, _ = _whisper_model.transcribe(
-        audio, language=language, vad_filter=vad_filter
+        audio, language=language, vad_filter=vad_filter, initial_prompt=initial_prompt
     )
     text = "".join(seg.text for seg in segments).strip()
     return text
@@ -572,7 +598,17 @@ def handle_command(cmd):
         set_state("idle")
         return {"ok": True, "state": get_state()}
     elif action == "transcript":
-        return {"transcript": _last_transcript, "state": get_state()}
+        duration = len(_last_audio) / SAMPLE_RATE if _last_audio is not None else None
+        vocab = load_vocabulary()
+        return {
+            "transcript": _last_transcript,
+            "state": get_state(),
+            "duration_s": round(duration, 3) if duration is not None else None,
+            "sample_rate": SAMPLE_RATE,
+            "model": _config.get("model", "base"),
+            "language": _config.get("language", "en"),
+            "initial_prompt": ", ".join(vocab) if vocab else None,
+        }
     elif action == "save_audio":
         path = cmd.get("path")
         if _last_audio is not None and path:
@@ -821,6 +857,7 @@ class DictateAppWindow:
         self._hint.pack(side="bottom")
 
         self._text_widget = None
+        self._transcript_meta: dict = {}
 
     def _center(self):
         sw = self._root.winfo_screenwidth()
@@ -868,8 +905,10 @@ class DictateAppWindow:
             try:
                 tresp = send_command("transcript")
                 text = tresp.get("transcript") or ""
+                self._transcript_meta = tresp
             except Exception:
                 text = ""
+                self._transcript_meta = {}
             self.phase_review(text)
         else:
             self._root.after(200, self._poll_transcribing)
@@ -880,7 +919,7 @@ class DictateAppWindow:
         display = text if text else "(empty transcript)"
         self._label.config(text=display)
         self._hint.config(text="Enter=insert   Space=edit   Esc=drop")
-        self._root.bind("<Return>", lambda e: self._do_insert(text))
+        self._root.bind("<Return>", lambda e: (self._save_sample(text, None, was_edited=False), self._do_insert(text)))
         self._root.bind("<space>", lambda e: self.phase_edit(text))
         self._root.bind("<Escape>", lambda e: self._do_drop())
 
@@ -888,7 +927,7 @@ class DictateAppWindow:
         self._original_transcript = text
         self._unbind_all()
         self._label.pack_forget()
-        self._hint.config(text="Enter = confirm   Esc = cancel")
+        self._hint.config(text="Enter=confirm  Esc=cancel  Ctrl+W=save word")
 
         import tkinter as tk
         if self._text_widget:
@@ -899,13 +938,26 @@ class DictateAppWindow:
         self._text_widget.focus_set()
         self._text_widget.bind("<Return>", self._on_edit_confirm)
         self._text_widget.bind("<Escape>", lambda e: self._do_drop())
+        self._text_widget.bind("<Control-w>", self._add_selection_to_vocab)
 
     def _on_edit_confirm(self, event):
         edited = self._text_widget.get("1.0", "end-1c")
         original = self._original_transcript
-        if edited != original:
-            self._do_save_training(original, edited)
+        self._save_sample(original, edited, was_edited=True)
         self._do_insert(edited)
+        return "break"
+
+    def _add_selection_to_vocab(self, event):
+        try:
+            word = self._text_widget.get(self._tk.SEL_FIRST, self._tk.SEL_LAST).strip()
+        except self._tk.TclError:
+            return "break"  # nothing selected
+        if word:
+            add_to_vocabulary(word)
+            self._hint.config(text=f"Saved {word!r}  |  Enter=confirm  Esc=cancel  Ctrl+W=save word")
+            self._root.after(2000, lambda: self._hint.config(
+                text="Enter=confirm  Esc=cancel  Ctrl+W=save word"
+            ))
         return "break"
 
     def _do_insert(self, text: str):
@@ -930,29 +982,46 @@ class DictateAppWindow:
     def _do_drop(self):
         self._root.destroy()
 
-    def _do_save_training(self, original: str, edited: str):
+    def _save_sample(self, original: str, edited: str | None, was_edited: bool):
         from datetime import datetime
         ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
         train_dir = os.path.expanduser("~/.local/share/dictation_tool/training")
         os.makedirs(train_dir, exist_ok=True)
-        wav_path = os.path.join(train_dir, f"{ts}.wav")
+        wav_name = f"{ts}.wav"
+        wav_path = os.path.join(train_dir, wav_name)
         json_path = os.path.join(train_dir, f"{ts}.json")
+
+        audio_saved = False
+        audio_error = None
         try:
-            send_command("save_audio", path=wav_path)
-        except Exception:
-            wav_path = None
-        meta = {
+            resp = send_command("save_audio", path=wav_path)
+            audio_saved = resp.get("ok", False)
+            if not audio_saved:
+                audio_error = resp.get("error")
+        except Exception as exc:
+            audio_error = str(exc)
+
+        meta = self._transcript_meta
+        payload = {
             "timestamp": ts,
-            "audio": wav_path,
+            "audio_file": wav_name if audio_saved else None,
+            "audio_saved": audio_saved,
+            "audio_error": audio_error,
+            "duration_s": meta.get("duration_s"),
+            "sample_rate": meta.get("sample_rate", SAMPLE_RATE),
             "transcript": original,
             "edited": edited,
+            "was_edited": was_edited,
+            "model": meta.get("model"),
+            "language": meta.get("language"),
+            "initial_prompt": meta.get("initial_prompt"),
         }
         try:
             with open(json_path, "w") as f:
-                json.dump(meta, f, indent=2)
-            log.info("training data saved: %s", json_path)
+                json.dump(payload, f, indent=2)
+            log.info("training sample saved: %s (was_edited=%s)", json_path, was_edited)
         except Exception as exc:
-            log.warning("training data save failed: %s", exc)
+            log.warning("training sample save failed: %s", exc)
 
 
 def cmd_app(_args):
