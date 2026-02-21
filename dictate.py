@@ -877,12 +877,13 @@ class DictateAppWindow:
     def phase_listening(self):
         self._unbind_all()
         self._label.config(text="🎤 Listening…")
-        self._hint.config(text="Enter = stop   Esc = cancel")
+        self._hint.config(text="Enter/Space = stop   Esc = cancel")
         try:
             send_command("start")
         except Exception:
             pass
         self._root.bind("<Return>", lambda e: self.phase_transcribing())
+        self._root.bind("<space>", lambda e: self.phase_transcribing())
         self._root.bind("<Escape>", lambda e: self._do_cancel())
 
     def phase_transcribing(self):
