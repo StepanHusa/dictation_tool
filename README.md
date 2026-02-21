@@ -1,10 +1,25 @@
 # Dictation Tool
 
-Offline push-to-talk speech-to-text for Linux (X11/XFCE). Press a key, speak,
-press again — transcribed text is typed wherever your cursor is. No cloud,
-no internet required.
+> Offline push-to-talk speech-to-text for Linux. Press a key, speak, press
+> again — transcribed text is typed wherever your cursor is.
 
-**Stack:** `faster-whisper` · `sounddevice` · `xdotool` · PipeWire · Python 3.11+
+![Platform](https://img.shields.io/badge/platform-Linux%20X11-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+No cloud. No internet. No subscription. Powered by
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) running locally
+on your CPU.
+
+---
+
+## Features
+
+- **Fire-and-forget** — bind a key, speak, text appears
+- **Floating review window** (`dictate app`) — see and edit the transcript before inserting
+- **Bluetooth headset support** — auto-switches from A2DP to HFP/HSP during recording
+- **Custom vocabulary** — teach Whisper to spell your names and technical terms correctly
+- **Training data collection** — save audio + transcripts for later fine-tuning
 
 ---
 
@@ -17,6 +32,7 @@ no internet required.
 | `xclip` | Clipboard injection fallback |
 | `libnotify` / `notify-send` | Desktop notifications |
 | PipeWire + `pactl` | Audio device selection & BT profile switching |
+| `tkinter` | Floating window mode — included with system Python |
 
 Install system packages (Debian/Ubuntu/Mint):
 
@@ -29,12 +45,13 @@ sudo apt install xdotool xclip libnotify-bin pipewire-audio-client-libraries
 ## Installation
 
 ```bash
-git clone https://github.com/youruser/dictation_tool.git ~/Source/dictation_tool
-cd ~/Source/dictation_tool
+git clone https://github.com/StepanHusa/dictation_tool.git
+cd dictation_tool
 bash install.sh
 ```
 
 `install.sh` will:
+
 1. Create a virtualenv at `~/.local/share/dictation_tool/venv`
 2. Install Python dependencies (`faster-whisper`, `sounddevice`, `numpy`)
 3. Write the `dictate` wrapper script to `~/.local/bin/dictate`
@@ -42,67 +59,188 @@ bash install.sh
 
 ### Add `~/.local/bin` to your PATH
 
-If it isn't there already, add this to `~/.bashrc` or `~/.zshrc`:
-
 ```bash
-export PATH="${HOME}/.local/bin:${PATH}"
+echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-Then reload your shell:
-
-```bash
-source ~/.bashrc   # or source ~/.zshrc
-```
-
-Verify:
+Verify the install:
 
 ```bash
 dictate status   # should print "not-running"
+```
+
+### Uninstall
+
+```bash
+bash uninstall.sh
 ```
 
 ---
 
 ## Usage
 
-The daemon starts automatically on first use. You don't need to start it manually.
+The daemon starts automatically on first use.
 
 | Command | Effect |
 |---|---|
-| `dictate toggle` | Start recording (if idle) **or** stop and transcribe (if recording) |
+| `dictate toggle` | Start recording (if idle) or stop and transcribe (if recording) |
 | `dictate start` | Start recording |
-| `dictate stop` | Stop recording, transcribe, type result |
+| `dictate stop` | Stop recording and transcribe |
 | `dictate cancel` | Abort recording without typing anything |
 | `dictate status` | Print current state (`idle` / `recording` / `transcribing` / `not-running`) |
+| `dictate app` | Open floating window for guided dictation |
 | `dictate daemon --no-fork` | Run daemon in the foreground (useful for debugging) |
 
-### Typical workflow
+---
 
-1. Press your shortcut → "🎤 Listening…" notification appears
-2. Speak your text
-3. Press the shortcut again → "⏳ Transcribing…" → "✅ Done — N words"
-4. Text is typed at wherever the cursor was when you pressed stop
+## Floating Window Mode (`dictate app`)
+
+`dictate app` opens a small always-on-top window that stays visible during the
+whole session. It captures which window was focused beforehand and restores
+focus before injecting text, so the result always lands in the right place.
+
+```
+Phase 1 — Listening
+┌─────────────────────────────────────┐
+│  🎤 Listening…                      │
+│                                     │
+│  Enter = stop   Esc = cancel        │
+└─────────────────────────────────────┘
+
+Phase 2 — Transcribing (auto-advances)
+┌─────────────────────────────────────┐
+│  ⏳ Transcribing…                   │
+└─────────────────────────────────────┘
+
+Phase 3 — Review
+┌─────────────────────────────────────┐
+│  the transcribed text here          │
+│                                     │
+│  Enter=insert  Shift+Enter=insert+save  Space=edit  Esc=drop │
+└─────────────────────────────────────┘
+
+Phase 4 — Edit
+┌─────────────────────────────────────┐
+│  [editable text field]              │
+│                                     │
+│  Enter=confirm+save  Esc=cancel  Ctrl+W=save word │
+└─────────────────────────────────────┘
+```
+
+### Key bindings
+
+**Review phase:**
+
+| Key | Effect |
+|---|---|
+| `Enter` | Insert immediately (fast path — no training data saved) |
+| `Shift+Enter` | Insert and save as a verified correct training example |
+| `Space` | Open edit mode to correct the text before inserting |
+| `Esc` | Drop — nothing is inserted |
+
+**Edit phase:**
+
+| Key | Effect |
+|---|---|
+| `Enter` | Confirm, insert, and save as a training example |
+| `Esc` | Cancel — nothing is inserted |
+| `Ctrl+W` | Save the selected text to the vocabulary list |
+
+---
+
+## Custom Vocabulary
+
+Whisper sometimes misspells proper nouns, technical terms, or names. You can
+bias it toward correct spellings by maintaining a vocabulary list.
+
+**File:** `~/.config/dictation_tool/vocabulary.txt` — one word or phrase per line:
+
+```
+Whisper
+faster-whisper
+xdotool
+```
+
+This list is passed to Whisper as an `initial_prompt` on every transcription.
+It improves spelling accuracy for the listed words — it is not voice training.
+
+### Adding words from the edit window
+
+1. Run `dictate app` and speak something containing a misspelled word
+2. Press `Space` to enter edit mode
+3. Select the correct spelling with the mouse or `Shift`+arrows
+4. Press `Ctrl+W` — the hint briefly confirms `Saved 'word'`
+
+The word is appended to `vocabulary.txt`. You can also edit the file directly
+in any text editor.
+
+---
+
+## Training Data Collection
+
+`dictate app` can save audio + transcript pairs for later fine-tuning the
+Whisper model on your voice and vocabulary.
+
+### When data is saved
+
+| Action | Saved? | `was_edited` |
+|---|---|---|
+| Review → `Enter` (fast insert) | No | — |
+| Review → `Shift+Enter` (verified correct) | Yes | `false` |
+| Edit → `Enter` (corrected) | Yes | `true` |
+
+Use plain `Enter` when you just want the text and don't care about data quality.
+Use `Shift+Enter` or edit+confirm when you have verified the result is correct.
+
+### File format
+
+Saved to `~/.local/share/dictation_tool/training/`. Each sample is a pair:
+
+```
+2026-02-21T20-54-42.wav    16-bit mono 16 kHz audio
+2026-02-21T20-54-42.json   metadata
+```
+
+Example JSON:
+
+```json
+{
+  "timestamp": "2026-02-21T20-54-42",
+  "audio_file": "2026-02-21T20-54-42.wav",
+  "audio_saved": true,
+  "audio_error": null,
+  "duration_s": 4.352,
+  "sample_rate": 16000,
+  "transcript": "what whisker originally produced",
+  "edited": "what I corrected it to",
+  "was_edited": true,
+  "model": "base",
+  "language": "en",
+  "initial_prompt": "Whisper, faster-whisper"
+}
+```
+
+For fine-tuning, pair the WAV with: `edited` when `was_edited` is `true`,
+`transcript` otherwise.
 
 ---
 
 ## XFCE Keyboard Shortcuts
 
-Open **Settings → Keyboard → Application Shortcuts**, click **Add**, and enter:
+Open **Settings → Keyboard → Application Shortcuts → Add**:
 
 | Shortcut | Command | Purpose |
 |---|---|---|
 | `Super+D` | `dictate toggle` | Start/stop dictation |
 | `Super+Shift+D` | `dictate cancel` | Cancel without typing |
-
-The `toggle` command starts the daemon automatically on first press, so no
-daemon pre-start is needed.
+| `Super+A` | `dictate app` | Guided dictation with review window |
 
 ---
 
 ## Configuration
 
-Config file: `~/.config/dictation_tool/config.toml`
-
-Default contents written by `install.sh`:
+**File:** `~/.config/dictation_tool/config.toml`
 
 ```toml
 model = "base"
@@ -112,103 +250,81 @@ auto_switch_bt = true
 injection_method = "xdotool"
 ```
 
-### All options
+### Options
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `model` | string | `"base"` | Whisper model size. Options: `tiny`, `base`, `small`, `medium`, `large-v3`. Larger = more accurate but slower to load and transcribe. |
-| `language` | string | `"en"` | BCP-47 language code for transcription, e.g. `"en"`, `"fi"`, `"de"`. Set to `"auto"` to let Whisper detect the language automatically (slower). |
-| `vad_filter` | bool | `true` | Enable Voice Activity Detection. Filters out silence, improving accuracy and speed. Disable if words at the start of sentences are being clipped. |
-| `auto_switch_bt` | bool | `true` | Automatically switch a Bluetooth headset from A2DP (stereo audio) to HFP/HSP (headset mic) on recording start, then restore A2DP on stop. Set to `false` to disable. |
-| `injection_method` | string | `"xdotool"` | How transcribed text is typed. `"xdotool"` uses `xdotool type`; `"clipboard"` copies text to clipboard then pastes via `Ctrl+V`. |
-| `device` | string | *(auto)* | Override the audio input device. Use the PipeWire source name from `pactl list sources short` (e.g. `"alsa_input.usb-..."`) or a sounddevice index. Omit to auto-detect. |
+| `model` | string | `"base"` | Whisper model size: `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `language` | string | `"en"` | BCP-47 language code, e.g. `"fi"`, `"de"`. Use `"auto"` to detect (slower). |
+| `vad_filter` | bool | `true` | Voice Activity Detection. Filters silence. Disable if words at sentence starts are clipped. |
+| `auto_switch_bt` | bool | `true` | Auto-switch Bluetooth headset from A2DP → HFP during recording, then restore. |
+| `injection_method` | string | `"xdotool"` | `"xdotool"` types directly; `"clipboard"` copies + pastes with `Ctrl+V`. |
+| `device` | string | *(auto)* | Force a specific audio input. Use the source name from `pactl list sources short`. |
 
 ### Model size guide
 
-| Model | Disk | VRAM* | Speed | Quality |
-|---|---|---|---|---|
-| `tiny` | ~75 MB | ~1 GB | Very fast | Basic |
-| `base` | ~145 MB | ~1 GB | Fast | Good (default) |
-| `small` | ~465 MB | ~2 GB | Moderate | Better |
-| `medium` | ~1.5 GB | ~5 GB | Slow | Great |
-| `large-v3` | ~3 GB | ~10 GB | Slowest | Best |
+| Model | Disk | Speed | Quality |
+|---|---|---|---|
+| `tiny` | ~75 MB | Very fast | Basic |
+| `base` | ~145 MB | Fast | Good (default) |
+| `small` | ~465 MB | Moderate | Better |
+| `medium` | ~1.5 GB | Slow | Great |
+| `large-v3` | ~3 GB | Slowest | Best |
 
-\* Run on CPU (`int8`) by default; VRAM figures are for reference only.
+All models run on CPU (`int8`) by default.
 
 ---
 
 ## Troubleshooting
 
-### No microphone found / recording is silent
+### No microphone / silent recording
 
-1. Check available sources:
-   ```bash
-   pactl list sources short
-   ```
-2. Set `device` in `config.toml` to the exact source name from that list.
-3. Make sure the source is not muted:
-   ```bash
-   pactl set-source-mute @DEFAULT_SOURCE@ 0
-   ```
+```bash
+pactl list sources short          # list available sources
+pactl set-source-mute @DEFAULT_SOURCE@ 0   # unmute default
+```
+
+Set `device` in `config.toml` to the exact source name if auto-detection fails.
 
 ### Bluetooth headset not switching to mic mode
 
-1. Verify the headset appears in `pactl list cards` with both an A2DP and an
-   HFP/HSP profile listed.
-2. Check that `auto_switch_bt = true` in `config.toml`.
-3. Some headsets require the HFP profile to be activated once manually via
-   your desktop's Bluetooth settings before automatic switching works.
-4. If you don't need auto-switching, set `auto_switch_bt = false` to silence
-   the warning.
+1. Verify `pactl list cards` shows both A2DP and HFP/HSP profiles for the headset.
+2. Some headsets need to be switched manually once before automatic switching works.
+3. Set `auto_switch_bt = false` to disable the feature entirely.
 
 ### `xdotool` not typing in some applications
 
-Some applications (Electron apps, certain browsers, games) block synthetic
-key events from `xdotool type`. Switch to the clipboard method:
+Electron apps and some browsers block synthetic key events. Use clipboard mode:
 
 ```toml
 injection_method = "clipboard"
 ```
 
-This copies text to the X clipboard and pastes it with `Ctrl+V`. Make sure
-`xclip` is installed (`sudo apt install xclip`).
+Requires `xclip` (`sudo apt install xclip`).
 
-### Daemon not starting / socket not created
+### `dictate app` shows "(empty transcript)"
 
-Check for a stale PID file:
-
-```bash
-cat /tmp/dictation_tool.pid
-ps aux | grep dictate
-```
-
-If the PID doesn't correspond to a running process, delete the file manually:
+The daemon is running old code. Restart it:
 
 ```bash
-rm -f /tmp/dictation_tool.pid /tmp/dictation_tool.sock
+kill $(cat /tmp/dictation_tool.pid) && rm -f /tmp/dictation_tool.pid /tmp/dictation_tool.sock
 ```
 
-Then try again. The daemon also prints to stdout when run with `--no-fork`:
-
-```bash
-dictate daemon --no-fork
-```
+The next `dictate app` call starts a fresh daemon automatically. This is only
+needed after updating `dictate.py`.
 
 ### Text typed in the wrong window
 
-The text is injected into whichever window has focus at the moment transcription
-finishes (after you press stop, not before). To avoid this, keep focus on your
-target window until the "✅ Done" notification appears.
+In toggle mode, text is injected into whichever window has focus when
+transcription finishes. Use `dictate app` instead — it captures the original
+window and restores focus automatically.
 
 ### First dictation is slow
 
-The Whisper model is loaded in a background thread when the daemon first starts.
-If you trigger dictation before the model finishes loading, the transcription
-step will block until it is ready. Subsequent dictations are fast because the
-model stays loaded in memory.
+The Whisper model loads in a background thread when the daemon starts. The
+first transcription waits for it; all subsequent ones are fast.
 
-To pre-warm the daemon at login, add this to your XFCE autostart
-(**Settings → Session and Startup → Application Autostart → Add**):
+Pre-warm at login via **Settings → Session and Startup → Application Autostart**:
 
 ```
 Name:    Dictation daemon
@@ -220,15 +336,37 @@ Command: dictate daemon
 ## File layout
 
 ```
-~/Source/dictation_tool/
-  dictate.py                  main script (daemon + CLI)
-  requirements.txt
-  install.sh
-  README.md
-
-~/.local/bin/dictate          wrapper (activates venv, runs dictate.py)
-~/.local/share/dictation_tool/venv/    virtualenv
-~/.config/dictation_tool/config.toml  user config
-/tmp/dictation_tool.sock      Unix socket (CLI ↔ daemon)
-/tmp/dictation_tool.pid       PID file
+~/.local/bin/dictate                      wrapper script
+~/.local/share/dictation_tool/
+  venv/                                   Python virtualenv
+  training/                               WAV + JSON training samples
+~/.config/dictation_tool/
+  config.toml                             user configuration
+  vocabulary.txt                          transcription vocabulary bias
+~/.local/state/dictation_tool/
+  dictation_tool.log                      rotating daemon log
+/tmp/dictation_tool.sock                  Unix socket (CLI ↔ daemon)
+/tmp/dictation_tool.pid                   daemon PID file
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome. Please open an issue before submitting a large pull
+request so we can discuss the approach first.
+
+```bash
+git clone https://github.com/StepanHusa/dictation_tool.git
+cd dictation_tool
+bash install.sh
+
+# verify no syntax errors after changes
+python3 -m py_compile dictate.py
+```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
