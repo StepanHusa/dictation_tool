@@ -18,6 +18,20 @@ echo "==> Installing Python dependencies"
 echo "==> Creating config directory at ${CONFIG_DIR}"
 mkdir -p "${CONFIG_DIR}"
 
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "==> Writing default config at ${CONFIG_FILE}"
+    cat > "${CONFIG_FILE}" <<'TOML'
+model = "base"
+language = "en"
+vad_filter = true
+auto_switch_bt = true
+injection_method = "xdotool"
+TOML
+else
+    echo "==> Config already exists at ${CONFIG_FILE}, skipping"
+fi
+
 echo "==> Writing wrapper script at ${WRAPPER}"
 mkdir -p "${BIN_DIR}"
 cat > "${WRAPPER}" <<EOF

@@ -1,4 +1,4 @@
-"Implement Linux Dictation Tool"
+/ralph-loop:ralph-loop "Implement Linux Dictation Tool"
 
 **Requirements and tasks:** See TASKS.md — implement everything listed there top to bottom.
 

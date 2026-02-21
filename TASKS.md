@@ -10,7 +10,7 @@ Similar tools found:
 - [openai/whisper Discussion #1282](https://github.com/openai/whisper/discussions/1282) — continuous dictation + xdotool pattern
 
 **Decision:** Build custom tool on top of `faster-whisper` + `sounddevice` + `xdotool` (user is on X11/XFCE).
-Daemon model: start once, keep alive. Start/stop via two key bindings (or one toggle).
+Daemon model: start once, keep alive. Start/stop via two key bindings (or one toggle script that the user mapsa to keys).
 
 ---
 
@@ -32,10 +32,10 @@ dictate.py <command>
 
 Audio device selection priority:
 1. Config override (explicit device name)
-2. Bluetooth headset in HFP/HSP profile (auto-detected via pactl)
+2. Bluetooth headset in HFP/HSP profile (auto-detected via pactl) or anythink that has audio input.
 3. Default PipeWire source
 
-Bluetooth flow: on `start`, if a BT card is present in A2DP profile, switch it to HFP/HSP. On `stop`, switch back to A2DP.
+Bluetooth flow: on `start`, if a BT card is present in A2DP profile, switch it to the prefered. On `stop`, switch back to previous.
 
 ---
 
