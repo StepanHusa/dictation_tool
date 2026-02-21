@@ -867,7 +867,7 @@ class DictateAppWindow:
         self._root.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
 
     def _unbind_all(self):
-        for key in ("<Return>", "<Escape>", "<space>"):
+        for key in ("<Return>", "<Shift-Return>", "<Escape>", "<space>"):
             self._root.unbind(key)
 
     def run(self):
@@ -919,8 +919,9 @@ class DictateAppWindow:
         self._unbind_all()
         display = text if text else "(empty transcript)"
         self._label.config(text=display)
-        self._hint.config(text="Enter=insert   Space=edit   Esc=drop")
-        self._root.bind("<Return>", lambda e: (self._save_sample(text, None, was_edited=False), self._do_insert(text)))
+        self._hint.config(text="Enter=insert  Shift+Enter=insert+save  Space=edit  Esc=drop")
+        self._root.bind("<Return>", lambda e: self._do_insert(text))
+        self._root.bind("<Shift-Return>", lambda e: (self._save_sample(text, None, was_edited=False), self._do_insert(text)))
         self._root.bind("<space>", lambda e: self.phase_edit(text))
         self._root.bind("<Escape>", lambda e: self._do_drop())
 
