@@ -8,8 +8,17 @@ BIN_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${HOME}/.config/dictation_tool"
 WRAPPER="${BIN_DIR}/dictate"
 
+# Prefer /usr/bin/python3 to avoid conda/conda-forge libstdc++ interference
+# with system libraries (libportaudio → libjack → libstdc++)
+if [ -x "/usr/bin/python3" ]; then
+    PYTHON="/usr/bin/python3"
+else
+    PYTHON="python3"
+fi
+echo "==> Using Python: ${PYTHON} ($(${PYTHON} --version))"
+
 echo "==> Creating virtual environment at ${VENV_DIR}"
-python3 -m venv "${VENV_DIR}"
+"${PYTHON}" -m venv "${VENV_DIR}"
 
 echo "==> Installing Python dependencies"
 "${VENV_DIR}/bin/pip" install --upgrade pip --quiet

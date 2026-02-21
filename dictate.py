@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import logging
 import os
 import re
 import signal
@@ -12,12 +13,35 @@ import sys
 import threading
 import time
 import tomllib
+from logging.handlers import RotatingFileHandler
 
 PID_FILE = "/tmp/dictation_tool.pid"
 SOCK_FILE = "/tmp/dictation_tool.sock"
 CONFIG_PATH = os.path.expanduser("~/.config/dictation_tool/config.toml")
+LOG_FILE = os.path.expanduser("~/.local/state/dictation_tool/dictation_tool.log")
 
 SAMPLE_RATE = 16000
+
+log = logging.getLogger("dictate")
+
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+
+def setup_logging(also_stderr: bool = False) -> None:
+    """Configure the 'dictate' logger. Called once at daemon startup."""
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=3)
+    file_handler.setFormatter(fmt)
+    handlers: list[logging.Handler] = [file_handler]
+    if also_stderr:
+        stderr_handler = logging.StreamHandler()
+        stderr_handler.setFormatter(fmt)
+        handlers.append(stderr_handler)
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -58,6 +82,7 @@ def get_state():
 
 def set_state(s):
     global _state
+    log.info("state: %s → %s", _state, s)
     _state = s
 
 
@@ -97,13 +122,15 @@ def select_input_device(config: dict):
     """
     override = config.get("device")
     if override:
+        log.info("input device: using config override %r", override)
         return override
 
     bt_source = list_bt_headset_source()
     if bt_source:
-        print(f"dictate: auto-selected BT source: {bt_source}", flush=True)
+        log.info("input device: auto-selected BT source %r", bt_source)
         return bt_source
 
+    log.info("input device: using system default")
     return None  # sounddevice will use the system default
 
 
@@ -205,7 +232,7 @@ def bt_switch_to_hfp() -> None:
 
     info = find_bt_card_info(output)
     if not info:
-        print("dictate: no BT card with A2DP+HFP found; skipping profile switch", flush=True)
+        log.info("BT: no card with A2DP+HFP found; skipping profile switch")
         return
 
     _bt_card_info = info
@@ -217,16 +244,16 @@ def bt_switch_to_hfp() -> None:
                 ["pactl", "set-card-profile", info["name"], info["hfp_profile"]],
                 timeout=5, check=True, capture_output=True,
             )
-            print(
-                f"dictate: BT profile switched {info['a2dp_profile']!r} → {info['hfp_profile']!r}",
-                flush=True,
+            log.info(
+                "BT: %s — switched %r → %r",
+                info["name"], info["a2dp_profile"], info["hfp_profile"],
             )
         except Exception as exc:
-            print(f"dictate: warning: failed to switch BT profile: {exc}", flush=True)
+            log.warning("BT: failed to switch profile: %s", exc)
     else:
-        print(
-            f"dictate: BT card not on A2DP (active={info['active_profile']!r}); not switching",
-            flush=True,
+        log.info(
+            "BT: %s — not on A2DP (active=%r); not switching",
+            info["name"], info["active_profile"],
         )
 
 
@@ -254,9 +281,9 @@ def bt_restore_profile() -> None:
             ["pactl", "set-card-profile", info["name"], prev],
             timeout=5, check=True, capture_output=True,
         )
-        print(f"dictate: BT profile restored to {prev!r}", flush=True)
+        log.info("BT: %s — profile restored to %r", info["name"], prev)
     except Exception as exc:
-        print(f"dictate: warning: failed to restore BT profile: {exc}", flush=True)
+        log.warning("BT: failed to restore profile: %s", exc)
 
 
 # ── Audio recording ──────────────────────────────────────────────────────────
@@ -276,7 +303,7 @@ def _record_worker(device) -> None:
                 chunk, _ = stream.read(4096)
                 _audio_chunks.append(chunk.copy())
     except Exception as exc:
-        print(f"dictate: recording error: {exc}", flush=True)
+        log.error("recording error: %s", exc)
         # Drop back to idle so the daemon stays usable
         _recording_active = False
         set_state("idle")
@@ -288,6 +315,7 @@ def start_recording() -> None:
     device = select_input_device(_config)
     _audio_chunks = []
     _recording_active = True
+    log.info("recording: started on device %r", device or "system default")
     _record_thread = threading.Thread(
         target=_record_worker, args=(device,), daemon=True
     )
@@ -304,8 +332,11 @@ def stop_recording() -> None:
     if _audio_chunks:
         import numpy as np  # lazily imported
         _last_audio = np.concatenate(_audio_chunks, axis=0).flatten()
+        duration = len(_last_audio) / SAMPLE_RATE
+        log.info("recording: stopped — %.1f s of audio captured", duration)
     else:
         _last_audio = None
+        log.info("recording: stopped — no audio captured")
 
 
 def cancel_recording() -> None:
@@ -316,6 +347,7 @@ def cancel_recording() -> None:
         _record_thread.join(timeout=3)
         _record_thread = None
     _last_audio = None
+    log.info("recording: cancelled — audio discarded")
 
 
 # ── Transcription ────────────────────────────────────────────────────────────
@@ -326,11 +358,11 @@ def load_whisper_model_bg(config: dict) -> None:
     try:
         from faster_whisper import WhisperModel  # noqa: PLC0415
         model_size = config.get("model", "base")
-        print(f"dictate: loading Whisper model {model_size!r}…", flush=True)
+        log.info("whisper: loading model %r…", model_size)
         _whisper_model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        print("dictate: Model loaded", flush=True)
+        log.info("whisper: model %r loaded", model_size)
     except Exception as exc:
-        print(f"dictate: failed to load Whisper model: {exc}", flush=True)
+        log.error("whisper: failed to load model: %s", exc)
     finally:
         _model_ready.set()
 
@@ -356,20 +388,26 @@ def _transcribe_worker() -> None:
     """Background thread: transcribe _last_audio, store result, set state idle."""
     global _last_transcript
     if _last_audio is None:
+        log.info("transcription: no audio available; skipping")
         set_state("idle")
         return
+    duration = len(_last_audio) / SAMPLE_RATE
+    log.info("transcription: starting (%.1f s of audio)", duration)
+    t0 = time.monotonic()
     try:
         text = transcribe_audio(_last_audio)
         _last_transcript = text
         word_count = len(text.split()) if text else 0
-        print(
-            f"dictate: transcription done: {word_count} word(s)",
-            flush=True,
+        elapsed = time.monotonic() - t0
+        preview = text[:80] + ("…" if len(text) > 80 else "")
+        log.info(
+            "transcription: done in %.1f s — %d word(s): %r",
+            elapsed, word_count, preview,
         )
         notify("✅ Dictation", f"Done — {word_count} words")
         inject_text(text, _config)
     except Exception as exc:
-        print(f"dictate: transcription error: {exc}", flush=True)
+        log.error("transcription: error: %s", exc)
         notify("⚠ Dictation", str(exc))
         _last_transcript = None
     finally:
@@ -420,9 +458,9 @@ def inject_text(text: str, config: dict) -> None:
                 timeout=5,
                 check=True,
             )
-            print("dictate: text injected via clipboard", flush=True)
+            log.info("inject: clipboard (%d chars)", len(text))
         except Exception as exc:
-            print(f"dictate: clipboard injection error: {exc}", flush=True)
+            log.error("inject: clipboard error: %s", exc)
     else:
         # Default: xdotool
         try:
@@ -431,9 +469,9 @@ def inject_text(text: str, config: dict) -> None:
                 timeout=30,
                 check=True,
             )
-            print("dictate: text injected via xdotool", flush=True)
+            log.info("inject: xdotool (%d chars)", len(text))
         except Exception as exc:
-            print(f"dictate: xdotool injection error: {exc}", flush=True)
+            log.error("inject: xdotool error: %s", exc)
 
 
 # ── Daemon helpers ──────────────────────────────────────────────────────────
@@ -498,33 +536,41 @@ def daemonize():
 def handle_command(cmd):
     """Process a command dict received over the socket. Return a response dict."""
     action = cmd.get("action", "")
+    state = get_state()
+    log.info("command: %r (state=%s)", action, state)
     if action == "status":
-        return {"state": get_state()}
+        return {"state": state}
     elif action == "start":
-        if get_state() == "idle":
+        if state == "idle":
             set_state("recording")
             bt_switch_to_hfp()
             start_recording()
             notify("🎤 Dictation", "Listening…", urgency="low", timeout=3000)
+        else:
+            log.info("command: 'start' ignored — already in state %r", state)
         return {"ok": True, "state": get_state()}
     elif action == "stop":
-        if get_state() == "recording":
+        if state == "recording":
             set_state("transcribing")
             stop_recording()
             bt_restore_profile()
             notify("⏳ Dictation", "Transcribing…")
             threading.Thread(target=_transcribe_worker, daemon=True).start()
+        else:
+            log.info("command: 'stop' ignored — state is %r", state)
         return {"ok": True, "state": get_state()}
     elif action == "cancel":
-        if get_state() == "recording":
+        if state == "recording":
             cancel_recording()
             bt_restore_profile()
             notify("❌ Dictation", "Cancelled")
         set_state("idle")
         return {"ok": True, "state": get_state()}
     elif action == "quit":
+        log.info("command: quit received — shutting down")
         return {"ok": True, "quit": True}
     else:
+        log.warning("command: unknown action %r", action)
         return {"error": f"unknown action: {action!r}"}
 
 
@@ -555,13 +601,19 @@ def run_daemon():
         pass
 
     _config = load_config()
+    if _config:
+        log.info("daemon: config loaded from %s", CONFIG_PATH)
+    else:
+        log.info("daemon: no config found; using defaults")
 
     write_pid()
+    log.info("daemon: started (pid=%d)", os.getpid())
 
     import atexit
     atexit.register(cleanup)
 
     def _sig_handler(*_):
+        log.info("daemon: signal received — shutting down")
         cleanup()
         sys.exit(0)
 
@@ -571,14 +623,12 @@ def run_daemon():
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(SOCK_FILE)
     srv.listen(5)
+    log.info("daemon: socket bound at %s", SOCK_FILE)
 
     # Start loading the Whisper model in the background (socket is already up)
     threading.Thread(
         target=load_whisper_model_bg, args=(_config,), daemon=True
     ).start()
-
-    # Log to syslog-style: will be invisible when daemonized, visible in --no-fork mode
-    print(f"dictate daemon started (pid={os.getpid()})", flush=True)
 
     try:
         while True:
@@ -602,6 +652,7 @@ def run_daemon():
                     if resp.get("quit"):
                         break
     finally:
+        log.info("daemon: shutting down")
         srv.close()
         cleanup()
 
@@ -611,6 +662,7 @@ def run_daemon():
 def cmd_daemon(args):
     if args.fork:
         daemonize()
+    setup_logging(also_stderr=not args.fork)
     run_daemon()
 
 
