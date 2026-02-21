@@ -385,7 +385,7 @@ def transcribe_audio(audio) -> str:
     return text
 
 
-def _transcribe_worker() -> None:
+def _transcribe_worker(no_inject: bool = False) -> None:
     """Background thread: transcribe _last_audio, store result, set state idle."""
     global _last_transcript
     if _last_audio is None:
@@ -406,7 +406,8 @@ def _transcribe_worker() -> None:
             elapsed, word_count, preview,
         )
         notify("✅ Dictation", f"Done — {word_count} words", replace_id=NOTIFY_ID)
-        inject_text(text, _config)
+        if not no_inject:
+            inject_text(text, _config)
     except Exception as exc:
         log.error("transcription: error: %s", exc)
         notify("⚠ Dictation", str(exc))
@@ -554,11 +555,12 @@ def handle_command(cmd):
         return {"ok": True, "state": get_state()}
     elif action == "stop":
         if state == "recording":
+            no_inject = cmd.get("no_inject", False)
             set_state("transcribing")
             stop_recording()
             bt_restore_profile()
             notify("⏳ Dictation", "Transcribing…", replace_id=NOTIFY_ID)
-            threading.Thread(target=_transcribe_worker, daemon=True).start()
+            threading.Thread(target=_transcribe_worker, args=(no_inject,), daemon=True).start()
         else:
             log.info("command: 'stop' ignored — state is %r", state)
         return {"ok": True, "state": get_state()}
@@ -569,6 +571,26 @@ def handle_command(cmd):
             notify("❌ Dictation", "Cancelled", replace_id=NOTIFY_ID)
         set_state("idle")
         return {"ok": True, "state": get_state()}
+    elif action == "transcript":
+        return {"transcript": _last_transcript, "state": get_state()}
+    elif action == "save_audio":
+        path = cmd.get("path")
+        if _last_audio is not None and path:
+            try:
+                import wave
+                import numpy as np
+                audio_int16 = (_last_audio * 32767).clip(-32768, 32767).astype(np.int16)
+                with wave.open(path, "w") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(SAMPLE_RATE)
+                    wf.writeframes(audio_int16.tobytes())
+                log.info("save_audio: wrote %s", path)
+                return {"ok": True}
+            except Exception as exc:
+                log.error("save_audio: error: %s", exc)
+                return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": "no audio available"}
     elif action == "quit":
         log.info("command: quit received — shutting down")
         return {"ok": True, "quit": True}
@@ -669,13 +691,14 @@ def cmd_daemon(args):
     run_daemon()
 
 
-def send_command(action):
+def send_command(action, **kwargs):
     """Send a JSON command to the daemon and return the response dict.
     Raises ConnectionRefusedError / FileNotFoundError if daemon is not running."""
+    payload = {"action": action, **kwargs}
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(5)
     sock.connect(SOCK_FILE)
-    sock.sendall(json.dumps({"action": action}).encode() + b"\n")
+    sock.sendall(json.dumps(payload).encode() + b"\n")
     data = b""
     while True:
         chunk = sock.recv(4096)
@@ -756,6 +779,192 @@ def cmd_cancel(_args):
         print("not-running")
 
 
+# ── App window ──────────────────────────────────────────────────────────────
+
+class DictateAppWindow:
+    """Floating always-on-top tkinter window for guided dictation."""
+
+    WIDTH = 420
+    HEIGHT = 160
+
+    def __init__(self, original_wid: str):
+        self._original_wid = original_wid
+        self._config = load_config()
+        self._original_transcript: str = ""
+
+        import tkinter as tk
+        self._tk = tk
+        self._root = tk.Tk()
+        self._root.title("Dictate")
+        self._root.resizable(False, False)
+        self._root.attributes("-topmost", True)
+        self._center()
+
+        self._frame = tk.Frame(self._root, padx=16, pady=12)
+        self._frame.pack(fill="both", expand=True)
+
+        self._label = tk.Label(
+            self._frame,
+            text="",
+            wraplength=self.WIDTH - 40,
+            justify="left",
+            anchor="nw",
+        )
+        self._label.pack(fill="both", expand=True)
+
+        self._hint = tk.Label(
+            self._frame,
+            text="",
+            fg="#888888",
+            font=("TkDefaultFont", 9),
+        )
+        self._hint.pack(side="bottom")
+
+        self._text_widget = None
+
+    def _center(self):
+        sw = self._root.winfo_screenwidth()
+        sh = self._root.winfo_screenheight()
+        x = (sw - self.WIDTH) // 2
+        y = (sh - self.HEIGHT) // 2
+        self._root.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
+
+    def _unbind_all(self):
+        for key in ("<Return>", "<Escape>", "<space>"):
+            self._root.unbind(key)
+
+    def run(self):
+        self.phase_listening()
+        self._root.mainloop()
+
+    def phase_listening(self):
+        self._unbind_all()
+        self._label.config(text="🎤 Listening…")
+        self._hint.config(text="Enter = stop   Esc = cancel")
+        try:
+            send_command("start")
+        except Exception:
+            pass
+        self._root.bind("<Return>", lambda e: self.phase_transcribing())
+        self._root.bind("<Escape>", lambda e: self._do_cancel())
+
+    def phase_transcribing(self):
+        self._unbind_all()
+        self._label.config(text="⏳ Transcribing…")
+        self._hint.config(text="")
+        try:
+            send_command("stop", no_inject=True)
+        except Exception:
+            pass
+        self._root.after(200, self._poll_transcribing)
+
+    def _poll_transcribing(self):
+        try:
+            resp = send_command("status")
+            state = resp.get("state", "idle")
+        except Exception:
+            state = "idle"
+        if state != "transcribing":
+            try:
+                tresp = send_command("transcript")
+                text = tresp.get("transcript") or ""
+            except Exception:
+                text = ""
+            self.phase_review(text)
+        else:
+            self._root.after(200, self._poll_transcribing)
+
+    def phase_review(self, text: str):
+        self._original_transcript = text
+        self._unbind_all()
+        display = text if text else "(empty transcript)"
+        self._label.config(text=display)
+        self._hint.config(text="Enter=insert   Space=edit   Esc=drop")
+        self._root.bind("<Return>", lambda e: self._do_insert(text))
+        self._root.bind("<space>", lambda e: self.phase_edit(text))
+        self._root.bind("<Escape>", lambda e: self._do_drop())
+
+    def phase_edit(self, text: str):
+        self._original_transcript = text
+        self._unbind_all()
+        self._label.pack_forget()
+        self._hint.config(text="Enter = confirm   Esc = cancel")
+
+        import tkinter as tk
+        if self._text_widget:
+            self._text_widget.destroy()
+        self._text_widget = tk.Text(self._frame, wrap="word", height=5)
+        self._text_widget.pack(fill="both", expand=True, before=self._hint)
+        self._text_widget.insert("1.0", text)
+        self._text_widget.focus_set()
+        self._text_widget.bind("<Return>", self._on_edit_confirm)
+        self._text_widget.bind("<Escape>", lambda e: self._do_drop())
+
+    def _on_edit_confirm(self, event):
+        edited = self._text_widget.get("1.0", "end-1c")
+        original = self._original_transcript
+        if edited != original:
+            self._do_save_training(original, edited)
+        self._do_insert(edited)
+        return "break"
+
+    def _do_insert(self, text: str):
+        self._root.destroy()
+        if self._original_wid:
+            try:
+                subprocess.run(
+                    ["xdotool", "windowfocus", "--sync", self._original_wid],
+                    timeout=3, capture_output=True,
+                )
+            except Exception:
+                pass
+        inject_text(text, self._config)
+
+    def _do_cancel(self):
+        try:
+            send_command("cancel")
+        except Exception:
+            pass
+        self._root.destroy()
+
+    def _do_drop(self):
+        self._root.destroy()
+
+    def _do_save_training(self, original: str, edited: str):
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        train_dir = os.path.expanduser("~/.local/share/dictation_tool/training")
+        os.makedirs(train_dir, exist_ok=True)
+        wav_path = os.path.join(train_dir, f"{ts}.wav")
+        json_path = os.path.join(train_dir, f"{ts}.json")
+        try:
+            send_command("save_audio", path=wav_path)
+        except Exception:
+            wav_path = None
+        meta = {
+            "timestamp": ts,
+            "audio": wav_path,
+            "transcript": original,
+            "edited": edited,
+        }
+        try:
+            with open(json_path, "w") as f:
+                json.dump(meta, f, indent=2)
+            log.info("training data saved: %s", json_path)
+        except Exception as exc:
+            log.warning("training data save failed: %s", exc)
+
+
+def cmd_app(_args):
+    ensure_daemon_running()
+    original_wid = subprocess.run(
+        ["xdotool", "getactivewindow"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    app = DictateAppWindow(original_wid)
+    app.run()
+
+
 # ── CLI entry point ─────────────────────────────────────────────────────────
 
 def main():
@@ -774,6 +983,9 @@ def main():
         help="Run in foreground instead of forking to background",
     )
     p_daemon.set_defaults(func=cmd_daemon)
+
+    p_app = sub.add_parser("app", help="Open floating window for guided dictation")
+    p_app.set_defaults(func=cmd_app)
 
     for name, fn in [
         ("toggle", cmd_toggle),
