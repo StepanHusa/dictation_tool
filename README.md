@@ -11,6 +11,10 @@ No cloud. No internet. No subscription. Powered by
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) running locally
 on your CPU.
 
+> **Note:** This project was mostly vibe-coded with AI assistance, but I use
+> it daily and test every feature carefully before committing. If something
+> breaks for you, please open an issue.
+
 ---
 
 ## Features
@@ -174,6 +178,27 @@ It improves spelling accuracy for the listed words — it is not voice training.
 
 The word is appended to `vocabulary.txt`. You can also edit the file directly
 in any text editor.
+
+---
+
+## Using Without Training Data Collection
+
+Training data collection is entirely optional. If you just want a dictation
+tool and don't care about fine-tuning, ignore it completely — nothing is saved
+unless you explicitly ask for it.
+
+**Simplest workflow — no data collected at all:**
+
+- Use `dictate toggle` (keyboard shortcut) — transcribes and types, nothing saved ever.
+- Use `dictate app` and press **Enter** in the review phase — inserts immediately, nothing saved.
+
+**If you use `dictate app` and want to avoid accidental saves:**
+
+- **Enter** in Review = insert, no save ✓
+- **Space → Enter** in Edit = save always (you chose to edit, so it's intentional)
+
+So as long as you don't press `Shift+Enter` in the review phase and don't go
+into edit mode, no files are ever written to `~/.local/share/dictation_tool/training/`.
 
 ---
 
