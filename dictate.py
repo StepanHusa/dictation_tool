@@ -21,6 +21,7 @@ CONFIG_PATH = os.path.expanduser("~/.config/dictation_tool/config.toml")
 LOG_FILE = os.path.expanduser("~/.local/state/dictation_tool/dictation_tool.log")
 
 SAMPLE_RATE = 16000
+NOTIFY_ID = 31415  # fixed ID so dictation notifications replace each other
 
 log = logging.getLogger("dictate")
 
@@ -404,7 +405,7 @@ def _transcribe_worker() -> None:
             "transcription: done in %.1f s — %d word(s): %r",
             elapsed, word_count, preview,
         )
-        notify("✅ Dictation", f"Done — {word_count} words")
+        notify("✅ Dictation", f"Done — {word_count} words", replace_id=NOTIFY_ID)
         inject_text(text, _config)
     except Exception as exc:
         log.error("transcription: error: %s", exc)
@@ -416,13 +417,15 @@ def _transcribe_worker() -> None:
 
 # ── Notifications ────────────────────────────────────────────────────────────
 
-def notify(title: str, message: str, urgency: str | None = None, timeout: int | None = None) -> None:
+def notify(title: str, message: str, urgency: str | None = None, timeout: int | None = None, replace_id: int | None = None) -> None:
     """Send a desktop notification via notify-send; silently ignore errors."""
     cmd = ["notify-send"]
     if urgency:
         cmd += ["-u", urgency]
     if timeout is not None:
         cmd += ["-t", str(timeout)]
+    if replace_id is not None:
+        cmd += ["-r", str(replace_id)]
     cmd += [title, message]
     try:
         subprocess.run(cmd, timeout=5, capture_output=True)
@@ -545,7 +548,7 @@ def handle_command(cmd):
             set_state("recording")
             bt_switch_to_hfp()
             start_recording()
-            notify("🎤 Dictation", "Listening…", urgency="low", timeout=3000)
+            notify("🎤 Dictation", "Listening…", urgency="low", timeout=0, replace_id=NOTIFY_ID)
         else:
             log.info("command: 'start' ignored — already in state %r", state)
         return {"ok": True, "state": get_state()}
@@ -554,7 +557,7 @@ def handle_command(cmd):
             set_state("transcribing")
             stop_recording()
             bt_restore_profile()
-            notify("⏳ Dictation", "Transcribing…")
+            notify("⏳ Dictation", "Transcribing…", replace_id=NOTIFY_ID)
             threading.Thread(target=_transcribe_worker, daemon=True).start()
         else:
             log.info("command: 'stop' ignored — state is %r", state)
@@ -563,7 +566,7 @@ def handle_command(cmd):
         if state == "recording":
             cancel_recording()
             bt_restore_profile()
-            notify("❌ Dictation", "Cancelled")
+            notify("❌ Dictation", "Cancelled", replace_id=NOTIFY_ID)
         set_state("idle")
         return {"ok": True, "state": get_state()}
     elif action == "quit":
