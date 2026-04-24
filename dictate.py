@@ -1094,7 +1094,27 @@ class DictateAppWindow:
         self._text_widget.bind("<Escape>", lambda e: self._do_drop())
         self._text_widget.bind("<Control-w>", self._add_selection_to_vocab)
         self._text_widget.bind("<Control-d>", self._start_inline_dictation)
+        self._text_widget.bind("<Control-BackSpace>", self._ctrl_backspace)
+        self._text_widget.bind("<Control-Delete>", self._ctrl_delete)
         self._hint.config(text="Enter=confirm  Ctrl+D=re-dictate selection  Esc=cancel  Ctrl+W=save word")
+
+    def _ctrl_backspace(self, event):
+        w = event.widget
+        insert = w.index("insert")
+        word_start = w.index("insert -1c wordstart")
+        if w.compare(word_start, "<", insert):
+            w.delete(word_start, insert)
+        elif w.compare(insert, ">", "1.0"):
+            w.delete("insert -1c", insert)
+        return "break"
+
+    def _ctrl_delete(self, event):
+        w = event.widget
+        insert = w.index("insert")
+        word_end = w.index("insert wordend")
+        if w.compare(word_end, ">", insert):
+            w.delete(insert, word_end)
+        return "break"
 
     def _on_edit_confirm(self, event):
         edited = self._text_widget.get("1.0", "end-1c")
