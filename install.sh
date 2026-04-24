@@ -36,6 +36,8 @@ language = "en"
 vad_filter = true
 auto_switch_bt = true
 injection_method = "xdotool"
+alsa_fallback = true
+# alsa_device = "plughw:0,0"  # uncomment to override; plughw:0,0 bypasses PipeWire entirely
 TOML
 else
     echo "==> Config already exists at ${CONFIG_FILE}, skipping"

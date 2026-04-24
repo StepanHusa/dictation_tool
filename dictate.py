@@ -96,6 +96,7 @@ _bt_card_info: dict | None = None
 _bt_previous_profile: str | None = None
 
 # Transcription state (daemon-side only)
+_override_language: str | None = None  # set by set_language command; overrides config
 _whisper_model = None          # faster-whisper WhisperModel; loaded on daemon startup
 _model_ready = threading.Event()  # set once model is loaded (or failed)
 _last_transcript: str | None = None  # most recent transcription result
@@ -334,31 +335,113 @@ def _record_worker(device) -> None:
         set_state("idle")
 
 
-def start_recording() -> None:
-    """Select device and launch recording thread."""
+_arecord_tmp_path: str | None = None  # set when arecord fallback is active
+
+
+def _record_worker_arecord(alsa_device: str, tmp_path: str) -> None:
+    """Background thread: record via arecord to a temp WAV file."""
+    global _recording_active
+    cmd = [
+        "arecord",
+        "-D", alsa_device,
+        "-f", "S16_LE",
+        "-r", "44100",
+        "-c", "2",
+        tmp_path,
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        while _recording_active:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        proc.terminate()
+        proc.wait(timeout=2)
+        stderr_out = proc.stderr.read().decode(errors="replace").strip()
+        if stderr_out:
+            log.warning("arecord stderr: %s", stderr_out)
+    except Exception as exc:
+        log.error("arecord recording error: %s", exc)
+        _recording_active = False
+        set_state("idle")
+
+
+def start_recording() -> str | None:
+    """Select device and launch recording thread. Returns the device label."""
     global _recording_active, _audio_chunks, _record_thread
     device = select_input_device(_config)
     _audio_chunks = []
     _recording_active = True
+
+    if device is None and _config.get("alsa_fallback"):
+        alsa_device = _config.get("alsa_device", "plughw:0,0")
+        capture_pct = _config.get("alsa_capture_pct", 40)
+        mic_boost = _config.get("alsa_mic_boost", 3)
+        try:
+            subprocess.run(["amixer", "-c", "0", "sset", "Capture", f"{capture_pct}%"],
+                           capture_output=True, timeout=2)
+            subprocess.run(["amixer", "-c", "0", "sset", "Internal Mic Boost", str(mic_boost)],
+                           capture_output=True, timeout=2)
+            log.info("alsa: capture=%d%% mic_boost=%d", capture_pct, mic_boost)
+        except Exception as exc:
+            log.warning("alsa: failed to set mixer levels: %s", exc)
+        global _arecord_tmp_path
+        _arecord_tmp_path = f"/tmp/dictation_arecord_{int(time.time())}.wav"
+        log.info("recording: using arecord fallback on ALSA device %r", alsa_device)
+        _record_thread = threading.Thread(
+            target=_record_worker_arecord, args=(alsa_device, _arecord_tmp_path), daemon=True
+        )
+        _record_thread.start()
+        return f"alsa:{alsa_device}"
+
     log.info("recording: started on device %r", device or "system default")
     _record_thread = threading.Thread(
         target=_record_worker, args=(device,), daemon=True
     )
     _record_thread.start()
+    return device
 
 
 def stop_recording() -> None:
     """Stop the recording thread and store the audio in _last_audio."""
-    global _recording_active, _record_thread, _last_audio
+    global _recording_active, _record_thread, _last_audio, _arecord_tmp_path
     _recording_active = False
     if _record_thread is not None:
         _record_thread.join(timeout=3)
         _record_thread = None
-    if _audio_chunks:
+
+    if _arecord_tmp_path and os.path.exists(_arecord_tmp_path):
+        import numpy as np  # noqa: PLC0415
+        import wave  # noqa: PLC0415
+        try:
+            with wave.open(_arecord_tmp_path) as wf:
+                hw_rate = wf.getframerate()
+                hw_channels = wf.getnchannels()
+                nframes = wf.getnframes()
+                raw = wf.readframes(nframes)
+            raw_samples = np.frombuffer(raw, dtype=np.int16)
+            raw_rms = float(np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2)))
+            log.info("arecord wav: rate=%d ch=%d nframes=%d raw_bytes=%d raw_rms=%.1f",
+                     hw_rate, hw_channels, nframes, len(raw), raw_rms)
+            stereo = raw_samples.reshape(-1, hw_channels)
+            mono = stereo[:, 0].astype(np.float32) / 32768.0
+            new_len = int(len(mono) * SAMPLE_RATE / hw_rate)
+            indices = np.linspace(0, len(mono) - 1, new_len)
+            _last_audio = np.interp(indices, np.arange(len(mono)), mono).astype(np.float32)
+        finally:
+            os.unlink(_arecord_tmp_path)
+            _arecord_tmp_path = None
+        duration = len(_last_audio) / SAMPLE_RATE
+        rms = float(np.sqrt(np.mean(_last_audio ** 2)))
+        peak = float(np.max(np.abs(_last_audio)))
+        log.info("recording: stopped — %.1f s of audio captured (rms=%.4f peak=%.4f)", duration, rms, peak)
+    elif _audio_chunks:
         import numpy as np  # lazily imported
         _last_audio = np.concatenate(_audio_chunks, axis=0).flatten()
         duration = len(_last_audio) / SAMPLE_RATE
-        log.info("recording: stopped — %.1f s of audio captured", duration)
+        rms = float(np.sqrt(np.mean(_last_audio ** 2)))
+        peak = float(np.max(np.abs(_last_audio)))
+        log.info("recording: stopped — %.1f s of audio captured (rms=%.4f peak=%.4f)", duration, rms, peak)
     else:
         _last_audio = None
         log.info("recording: stopped — no audio captured")
@@ -400,7 +483,7 @@ def transcribe_audio(audio) -> str:
     _model_ready.wait()
     if _whisper_model is None:
         return ""
-    language = _config.get("language", "en")
+    language = _override_language if _override_language else _config.get("language", "en")
     vad_filter = _config.get("vad_filter", True)
     vocab = load_vocabulary()
     initial_prompt = ", ".join(vocab) if vocab else None
@@ -409,6 +492,31 @@ def transcribe_audio(audio) -> str:
     )
     text = "".join(seg.text for seg in segments).strip()
     return text
+
+
+def _save_history_entry(text: str, duration: float) -> None:
+    from datetime import datetime  # noqa: PLC0415
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    train_dir = os.path.expanduser("~/.local/share/dictation_tool/training")
+    os.makedirs(train_dir, exist_ok=True)
+    payload = {
+        "timestamp": ts,
+        "source": "auto",
+        "audio_file": None,
+        "audio_saved": False,
+        "duration_s": round(duration, 3),
+        "sample_rate": SAMPLE_RATE,
+        "transcript": text,
+        "edited": None,
+        "was_edited": False,
+        "model": _config.get("model", "base"),
+        "language": _config.get("language", "en"),
+    }
+    try:
+        with open(os.path.join(train_dir, f"{ts}.json"), "w") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as exc:
+        log.warning("history: save failed: %s", exc)
 
 
 def _transcribe_worker(no_inject: bool = False) -> None:
@@ -424,6 +532,8 @@ def _transcribe_worker(no_inject: bool = False) -> None:
     try:
         text = transcribe_audio(_last_audio)
         _last_transcript = text
+        if text:
+            _save_history_entry(text, duration)
         word_count = len(text.split()) if text else 0
         elapsed = time.monotonic() - t0
         preview = text[:80] + ("…" if len(text) > 80 else "")
@@ -574,8 +684,9 @@ def handle_command(cmd):
         if state == "idle":
             set_state("recording")
             bt_switch_to_hfp()
-            start_recording()
-            notify("🎤 Dictation", "Listening…", urgency="low", timeout=0, replace_id=NOTIFY_ID)
+            device = start_recording()
+            device_label = device if device else "default"
+            notify("🎤 Dictation", f"Listening… [{device_label}]", urgency="low", timeout=0, replace_id=NOTIFY_ID)
         else:
             log.info("command: 'start' ignored — already in state %r", state)
         return {"ok": True, "state": get_state()}
@@ -597,6 +708,28 @@ def handle_command(cmd):
             notify("❌ Dictation", "Cancelled", replace_id=NOTIFY_ID)
         set_state("idle")
         return {"ok": True, "state": get_state()}
+    elif action == "history":
+        train_dir = os.path.expanduser("~/.local/share/dictation_tool/training")
+        entries = []
+        seen = set()
+        try:
+            for fname in sorted(os.listdir(train_dir), reverse=True):
+                if not fname.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(train_dir, fname)) as f:
+                        data = json.load(f)
+                    t = data.get("transcript", "").strip()
+                    if t and t not in seen:
+                        entries.append(t)
+                        seen.add(t)
+                        if len(entries) >= 20:
+                            break
+                except Exception:
+                    continue
+        except FileNotFoundError:
+            pass
+        return {"history": entries}
     elif action == "transcript":
         duration = len(_last_audio) / SAMPLE_RATE if _last_audio is not None else None
         vocab = load_vocabulary()
@@ -627,6 +760,11 @@ def handle_command(cmd):
                 log.error("save_audio: error: %s", exc)
                 return {"ok": False, "error": str(exc)}
         return {"ok": False, "error": "no audio available"}
+    elif action == "set_language":
+        global _override_language
+        _override_language = cmd.get("language") or None
+        log.info("command: language set to %r", _override_language)
+        return {"ok": True, "language": _override_language}
     elif action == "quit":
         log.info("command: quit received — shutting down")
         return {"ok": True, "quit": True}
@@ -858,6 +996,7 @@ class DictateAppWindow:
 
         self._text_widget = None
         self._transcript_meta: dict = {}
+        self._lang: str = self._config.get("language", "en")
 
     def _center(self):
         sw = self._root.winfo_screenwidth()
@@ -867,24 +1006,35 @@ class DictateAppWindow:
         self._root.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
 
     def _unbind_all(self):
-        for key in ("<Return>", "<Shift-Return>", "<Escape>", "<space>"):
+        for key in ("<Return>", "<Shift-Return>", "<Escape>", "<space>", "l", "c", "r", "t"):
             self._root.unbind(key)
 
     def run(self):
         self.phase_listening()
         self._root.mainloop()
 
+    def _toggle_language(self):
+        self._lang = "cs" if self._lang == "en" else "en"
+        try:
+            send_command("set_language", language=self._lang)
+        except Exception:
+            pass
+        self._label.config(text=f"🎤 Listening… [{self._lang.upper()}]")
+
     def phase_listening(self):
         self._unbind_all()
-        self._label.config(text="🎤 Listening…")
-        self._hint.config(text="Enter/Space = stop   Esc = cancel")
+        self._label.config(text=f"🎤 Listening… [{self._lang.upper()}]")
+        self._hint.config(text="Enter/Space=stop  R=recall  T=history  L=lang  Esc=cancel")
         try:
             send_command("start")
         except Exception:
             pass
         self._root.bind("<Return>", lambda e: self.phase_transcribing())
         self._root.bind("<space>", lambda e: self.phase_transcribing())
+        self._root.bind("l", lambda e: self._toggle_language())
         self._root.bind("<Escape>", lambda e: self._do_cancel())
+        self._root.bind("r", lambda e: self._do_recall())
+        self._root.bind("t", lambda e: self._do_history())
 
     def phase_transcribing(self):
         self._unbind_all()
@@ -919,17 +1069,19 @@ class DictateAppWindow:
         self._unbind_all()
         display = text if text else "(empty transcript)"
         self._label.config(text=display)
-        self._hint.config(text="Enter=insert  Shift+Enter=insert+save  Space=edit  Esc=drop")
+        self._hint.config(text="Enter=insert  Shift+Enter=insert+save  C=copy  Space=edit  Esc=drop")
         self._root.bind("<Return>", lambda e: self._do_insert(text))
-        self._root.bind("<Shift-Return>", lambda e: (self._save_sample(text, None, was_edited=False), self._do_insert(text)))
+        self._root.bind("<Shift-Return>", lambda e: self._save_sample(text, None, was_edited=False) or setattr(self, '_pending_shift_insert', text))
+        self._root.bind("<KeyRelease-Shift_L>", lambda e: self._on_shift_release())
+        self._root.bind("<KeyRelease-Shift_R>", lambda e: self._on_shift_release())
         self._root.bind("<space>", lambda e: self.phase_edit(text))
         self._root.bind("<Escape>", lambda e: self._do_drop())
+        self._root.bind("c", lambda e: self._do_copy(text))
 
     def phase_edit(self, text: str):
         self._original_transcript = text
         self._unbind_all()
         self._label.pack_forget()
-        self._hint.config(text="Enter=confirm  Esc=cancel  Ctrl+W=save word")
 
         import tkinter as tk
         if self._text_widget:
@@ -941,6 +1093,8 @@ class DictateAppWindow:
         self._text_widget.bind("<Return>", self._on_edit_confirm)
         self._text_widget.bind("<Escape>", lambda e: self._do_drop())
         self._text_widget.bind("<Control-w>", self._add_selection_to_vocab)
+        self._text_widget.bind("<Control-d>", self._start_inline_dictation)
+        self._hint.config(text="Enter=confirm  Ctrl+D=re-dictate selection  Esc=cancel  Ctrl+W=save word")
 
     def _on_edit_confirm(self, event):
         edited = self._text_widget.get("1.0", "end-1c")
@@ -961,6 +1115,161 @@ class DictateAppWindow:
                 text="Enter=confirm  Esc=cancel  Ctrl+W=save word"
             ))
         return "break"
+
+    def _start_inline_dictation(self, event=None):
+        try:
+            sel_start = self._text_widget.index(self._tk.SEL_FIRST)
+            sel_end = self._text_widget.index(self._tk.SEL_LAST)
+        except self._tk.TclError:
+            self._hint.config(text="Select text first!  Ctrl+D=re-dictate selection")
+            return "break"
+        self._inline_sel = (sel_start, sel_end)
+        try:
+            send_command("start")
+        except Exception:
+            pass
+        self._hint.config(text="🎤 Recording… Enter/Space=stop  Esc=cancel")
+        self._text_widget.bind("<Return>", lambda e: (self._stop_inline_dictation(), "break"))
+        self._text_widget.bind("<space>", lambda e: (self._stop_inline_dictation(), "break"))
+        self._text_widget.bind("<Escape>", lambda e: self._cancel_inline_dictation())
+        return "break"
+
+    def _cancel_inline_dictation(self):
+        try:
+            send_command("cancel")
+        except Exception:
+            pass
+        self._hint.config(text="Enter=confirm  Ctrl+D=re-dictate selection  Esc=cancel  Ctrl+W=save word")
+        self._text_widget.bind("<Return>", self._on_edit_confirm)
+        self._text_widget.bind("<space>", lambda e: None)
+        self._text_widget.bind("<Escape>", lambda e: self._do_drop())
+
+    def _stop_inline_dictation(self):
+        try:
+            send_command("stop", no_inject=True)
+        except Exception:
+            pass
+        self._hint.config(text="⏳ Transcribing…")
+        self._root.after(200, self._poll_inline_transcription)
+
+    def _poll_inline_transcription(self):
+        try:
+            state = send_command("status").get("state", "idle")
+        except Exception:
+            state = "idle"
+        if state == "transcribing":
+            self._root.after(200, self._poll_inline_transcription)
+            return
+        try:
+            text = send_command("transcript").get("transcript") or ""
+        except Exception:
+            text = ""
+        if text:
+            sel_start, sel_end = self._inline_sel
+            self._text_widget.delete(sel_start, sel_end)
+            self._text_widget.insert(sel_start, text)
+        self._hint.config(text="Enter=confirm  Ctrl+D=re-dictate selection  Esc=cancel  Ctrl+W=save word")
+        self._text_widget.bind("<Return>", self._on_edit_confirm)
+        self._text_widget.bind("<space>", lambda e: None)
+        self._text_widget.bind("<Escape>", lambda e: self._do_drop())
+
+    def _do_recall(self):
+        try:
+            send_command("cancel")
+        except Exception:
+            pass
+        text = ""
+        try:
+            text = send_command("transcript").get("transcript") or ""
+        except Exception:
+            pass
+        if not text:
+            try:
+                history = send_command("history").get("history", [])
+                text = history[0] if history else ""
+            except Exception:
+                pass
+        self._transcript_meta = {}
+        self.phase_review(text if text else "(nothing to recall)")
+
+    def _do_history(self):
+        try:
+            send_command("cancel")
+        except Exception:
+            pass
+        try:
+            resp = send_command("history")
+            history = resp.get("history", [])
+        except Exception:
+            history = []
+        self.phase_history(history)
+
+    def phase_history(self, history: list):
+        self._unbind_all()
+        if not history:
+            self._label.config(text="(no history yet)")
+            self._hint.config(text="Esc=close")
+            self._root.bind("<Escape>", lambda e: self._do_drop())
+            return
+
+        self._label.config(text="Select a transcript:")
+        self._hint.config(text="↑↓=navigate  Enter=insert  Esc=close")
+
+        lb_frame = self._tk.Frame(self._frame)
+        lb_frame.pack(fill="both", expand=True, pady=(4, 0))
+
+        scrollbar = self._tk.Scrollbar(lb_frame, orient="vertical")
+        listbox = self._tk.Listbox(
+            lb_frame,
+            yscrollcommand=scrollbar.set,
+            selectmode="single",
+            activestyle="dotbox",
+            height=min(len(history), 6),
+        )
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        for item in history:
+            preview = item[:60] + ("…" if len(item) > 60 else "")
+            listbox.insert("end", preview)
+        listbox.selection_set(0)
+        listbox.activate(0)
+        listbox.focus_set()
+
+        def move(delta):
+            cur = listbox.index("active")
+            new = max(0, min(listbox.size() - 1, cur + delta))
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(new)
+            listbox.activate(new)
+            listbox.see(new)
+            return "break"
+
+        def on_select(e=None):
+            idx = listbox.curselection()
+            i = idx[0] if idx else listbox.index("active")
+            lb_frame.destroy()
+            self.phase_review(history[i])
+
+        listbox.bind("<Up>", lambda e: move(-1))
+        listbox.bind("<Down>", lambda e: move(1))
+        listbox.bind("<Return>", on_select)
+        listbox.bind("<Double-Button-1>", on_select)
+        self._root.bind("<Escape>", lambda e: (lb_frame.destroy(), self._do_drop()))
+
+    def _do_copy(self, text: str):
+        try:
+            subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), timeout=3)
+            self._hint.config(text="Copied!  Enter=insert  Shift+Enter=insert+save  Space=edit  Esc=drop")
+        except Exception:
+            pass
+
+    def _on_shift_release(self):
+        text = getattr(self, '_pending_shift_insert', None)
+        if text is not None:
+            self._pending_shift_insert = None
+            self._do_insert(text)
 
     def _do_insert(self, text: str):
         self._root.destroy()
